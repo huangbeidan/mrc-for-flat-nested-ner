@@ -28,6 +28,9 @@ from utils.get_parser import get_parser
 from utils.radom_seed import set_random_seed
 import logging
 
+# from sadice import SelfAdjDiceLoss
+# import tensorflow as tf
+
 set_random_seed(0)
 
 
@@ -65,6 +68,8 @@ class BertLabeling(pl.LightningModule):
         # self.loss_type = "bce"
         if self.loss_type == "bce":
             self.bce_loss = BCEWithLogitsLoss(reduction="none")
+        elif self.loss_type == "adaptive_dice":
+            self.adaptive_dice_loss = AdaptiveDiceLoss(with_logits=True, smooth=args.dice_smooth)
         else:
             self.dice_loss = DiceLoss(with_logits=True, smooth=args.dice_smooth)
         # todo(yuxian): 由于match loss是n^2的，应该特殊调整一下loss rate
@@ -93,7 +98,7 @@ class BertLabeling(pl.LightningModule):
                             default="all", help="Candidates used to compute span loss")
         parser.add_argument("--chinese", action="store_true",
                             help="is chinese dataset")
-        parser.add_argument("--loss_type", choices=["bce", "dice"], default="bce",
+        parser.add_argument("--loss_type", choices=["bce", "dice", "adaptive_dice"], default="bce",
                             help="loss type")
         parser.add_argument("--optimizer", choices=["adamw", "sgd"], default="adamw",
                             help="loss type")
@@ -174,6 +179,18 @@ class BertLabeling(pl.LightningModule):
             match_loss = self.bce_loss(span_logits.view(batch_size, -1), match_labels.view(batch_size, -1).float())
             match_loss = match_loss * float_match_label_mask
             match_loss = match_loss.sum() / (float_match_label_mask.sum() + 1e-10)
+        elif self.loss_type == "adaptive_dice":
+            # start_labels = tf.cast(start_labels, dtype=tf.int64)
+            # end_labels = tf.cast(end_labels, dtype=tf.int64)
+            # match_labels = tf.cast(match_labels, dtype=tf.int64)
+            # print("starta labels? ", start_labels)
+            # print("start labels type? ", start_labels.view(-1).int().type())
+            # start_loss = self.adjusted_dice_loss(start_logits, torch.tensor(start_labels.int().cpu().numpy(), dtype=torch.int64))
+            # end_loss = self.adjusted_dice_loss(end_logits, torch.tensor(end_labels.int().cpu().numpy(), dtype=torch.int64))
+            # match_loss = self.adjusted_dice_loss(span_logits, torch.tensor(match_labels.int().numpy(), dtype=torch.int64))
+            start_loss = self.adaptive_dice_loss(start_logits, start_labels.float(), start_float_label_mask)
+            end_loss = self.adaptive_dice_loss(end_logits, end_labels.float(), end_float_label_mask)
+            match_loss = self.adaptive_dice_loss(span_logits, match_labels.float(), float_match_label_mask)
         else:
             start_loss = self.dice_loss(start_logits, start_labels.float(), start_float_label_mask)
             end_loss = self.dice_loss(end_logits, end_labels.float(), end_float_label_mask)
@@ -292,7 +309,7 @@ class BertLabeling(pl.LightningModule):
         json_path = os.path.join(self.data_dir, f"mrc-ner.{prefix}")
         vocab_path = os.path.join(self.bert_dir, "vocab.txt")
         dataset = MRCNERDataset(json_path=json_path,
-                                tokenizer=BertWordPieceTokenizer(vocab_file=vocab_path),
+                                tokenizer=BertWordPieceTokenizer(vocab=vocab_path),
                                 max_length=self.args.max_length,
                                 is_chinese=self.chinese,
                                 pad_to_maxlen=False
@@ -361,6 +378,7 @@ def main():
 
     model = BertLabeling(args)
     if args.pretrained_checkpoint:
+        print("testing====Load from checkpoint=======")
         model.load_state_dict(torch.load(args.pretrained_checkpoint,
                                          map_location=torch.device('cpu'))["state_dict"])
 
